@@ -152,6 +152,10 @@ class LiveAvatarEngine(AvatarEngine):
         self._render_q: "queue.Queue" = queue.Queue()
         self._server_started = False
         self._build_lock = threading.Lock()
+        # streaming: frames are teed out of vae.decode as each block is produced
+        self._active_sink: Optional[OnFrames] = None
+        self._decode_wrapped = False
+        self._decode_drop = 0
 
     # ---------- lifecycle ----------
     def is_distributed(self) -> bool:
@@ -223,7 +227,47 @@ class LiveAvatarEngine(AvatarEngine):
             except Exception as exc:
                 log.warning("load_lora() failed (%s); confirm against repo", exc)
         torch.set_grad_enabled(False)
+        self._wrap_vae_decode()
         log.info("rank %d WanS2V ready", self._rank)
+
+    def _wrap_vae_decode(self) -> None:
+        """Tee every per-block VAE decode to the active stream sink, so frames
+        reach WebRTC as generate() produces them instead of all at the end."""
+        vae = getattr(self._wan, "vae", None)
+        if vae is None or not hasattr(vae, "decode"):
+            log.warning("vae.decode not found; streaming disabled (frames batch per clip)")
+            return
+        orig = vae.decode
+        engine = self
+
+        def wrapped(latents, *a, **k):
+            result = orig(latents, *a, **k)
+            sink = engine._active_sink
+            if sink is not None:
+                try:
+                    frames = engine._decode_result_to_frames(result)
+                    if frames:
+                        sink(frames)
+                except Exception as exc:
+                    log.error("stream tee failed: %s", exc)
+            return result
+
+        vae.decode = wrapped
+        self._decode_wrapped = True
+        log.info("vae.decode wrapped for realtime frame streaming")
+
+    def _decode_result_to_frames(self, result) -> list[np.ndarray]:
+        import torch
+
+        img = torch.stack(list(result)) if isinstance(result, (list, tuple)) else result
+        if img.dim() == 5:
+            img = img[0]
+        frames = _video_to_frames(img)
+        if self._decode_drop and frames:               # drop warmup frames once per clip
+            drop = min(self._decode_drop, len(frames))
+            frames = frames[drop:]
+            self._decode_drop = 0
+        return frames
 
     # ---------- render dispatch ----------
     def start_render_server(self) -> None:
@@ -246,17 +290,18 @@ class LiveAvatarEngine(AvatarEngine):
                     self._broadcast_job(None)
                 return
             prompt, ref_path, audio_path, on_frames = job
+            self._active_sink = on_frames     # frames stream out via wrapped vae.decode
+            self._decode_drop = 3             # drop warmup frames at clip start
             try:
                 if self.is_distributed():
                     self._broadcast_job((prompt, ref_path, audio_path))
-                frames = self.render_clip(prompt, ref_path, audio_path)
+                leftover = self.render_clip(prompt, ref_path, audio_path)
+                if leftover:                  # fallback if streaming tee was unavailable
+                    on_frames(leftover)
             except Exception as exc:
                 log.error("render failed: %s", exc, exc_info=True)
-                frames = []
-            try:
-                on_frames(frames)
-            except Exception as exc:
-                log.error("on_frames callback failed: %s", exc)
+            finally:
+                self._active_sink = None
 
     def _broadcast_job(self, job) -> None:
         import torch.distributed as dist
@@ -304,8 +349,10 @@ class LiveAvatarEngine(AvatarEngine):
             init_first_frame=True,
             num_gpus_dit=s.la_num_gpus_dit,
             enable_vae_parallel=self.is_distributed(),
-            enable_online_decode=True,
+            enable_online_decode=True,        # decode each block as it is produced
         )
+        if self._decode_wrapped and self._active_sink is not None:
+            return []                         # frames already streamed during generate()
         return _video_to_frames(video)
 
     async def start_session(self, ref_image: np.ndarray, prompt: str, config: EngineConfig) -> AvatarSession:
