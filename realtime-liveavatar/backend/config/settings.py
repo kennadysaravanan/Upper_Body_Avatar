@@ -69,16 +69,20 @@ class Settings(BaseSettings):
 
     # ---- webrtc ----
     stun_urls: list[str] = Field(default_factory=lambda: ["stun:stun.l.google.com:19302"])
-    turn_url: str | None = None
+    turn_url: str | None = None              # single TURN url (back-compat)
+    turn_urls: list[str] = Field(default_factory=list)  # multiple (udp/tcp/tls)
     turn_user: str | None = None
     turn_password: str | None = None
     max_sessions: int = 8
 
     def ice_servers(self) -> list[dict]:
         servers: list[dict] = [{"urls": self.stun_urls}]
-        if self.turn_url:
+        turns = list(self.turn_urls)
+        if self.turn_url and self.turn_url not in turns:
+            turns.append(self.turn_url)
+        if turns:
             servers.append(
-                {"urls": [self.turn_url], "username": self.turn_user, "credential": self.turn_password}
+                {"urls": turns, "username": self.turn_user, "credential": self.turn_password}
             )
         return servers
 
