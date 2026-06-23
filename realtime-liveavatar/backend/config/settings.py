@@ -76,7 +76,9 @@ class Settings(BaseSettings):
     max_sessions: int = 8
 
     def ice_servers(self) -> list[dict]:
-        servers: list[dict] = [{"urls": self.stun_urls}]
+        servers: list[dict] = []
+        if self.stun_urls:
+            servers.append({"urls": self.stun_urls})
         turns = list(self.turn_urls)
         if self.turn_url and self.turn_url not in turns:
             turns.append(self.turn_url)
