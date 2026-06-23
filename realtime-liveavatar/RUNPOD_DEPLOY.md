@@ -1,47 +1,44 @@
-# RunPod Deployment — two-phase, cost-saving workflow
+# RunPod Deployment — REALTIME talking avatar (H100 SXM)
 
-Goal: download the heavy stuff **once** to a persistent **Network Volume** on a
-cheap pod, terminate it, then attach the same volume to an expensive multi-GPU
-pod only when serving. You pay GPU rates only while a pod runs; the volume
-persists at ~$0.07/GB/mo.
+Your exact workflow:
 
-> **Important correction:** realtime LiveAvatar = **5 GPUs in ONE pod** (the TPP
-> pipeline runs as `torchrun --nproc_per_node=5` and passes latents between GPUs
-> inside one machine). It is **not** 5 separate pods. So "serving" below is a
-> single multi-GPU pod (5×H800 or 8×H100).
->
-> If you only want the simpler **single-GPU embedded** path (my FastAPI app calls
-> `WanS2V.generate()` per sentence — runnable, not 45 FPS), serving is just a
-> 1×H100/H800 pod and you skip the torchrun bits.
+1. **Phase 1** — H100 SXM, **GPU count 1**, attach a Network Volume, download
+   EVERYTHING (repos, venv, model weights) onto the volume. Then **terminate**.
+2. **Phase 2** — H100 SXM, **GPU count 5**, attach the SAME volume, launch the
+   **realtime** avatar (5-GPU TPP). Stop when idle. Repeat Phase 2 whenever you
+   need it — no re-download.
 
-Everything below assumes the volume mounts at `/workspace`.
+> **Realtime, not offline.** Realtime LiveAvatar = **5 GPUs in ONE pod** running
+> the TPP pipeline (`torchrun --nproc_per_node=5`). The 5 GPUs make per-sentence
+> `generate()` run at ~45 FPS throughput, so each spoken reply is produced
+> near-instantly and streamed. It is **not** 5 separate pods, and it is **not**
+> the single-GPU offline path.
 
----
+Volume mounts at `/workspace` everywhere below.
 
+═══════════════════════════════════════════════════════════════════════════════
 ## PHASE 0 — Create the Network Volume (once)
+═══════════════════════════════════════════════════════════════════════════════
 
-1. RunPod → **Storage** → **Network Volumes** → **New**.
-2. **Region/Datacenter:** pick one that has **H800/H100 availability** (the volume
-   is region-locked; the serving pod must be in the same region).
-3. **Size:** **250 GB** (Wan2.2-S2V-14B + T5 + VAE + audio encoder + LoRA ≈ 60–90 GB;
-   leave room for the venv and temp files).
-4. Create it. Note the region.
+1. RunPod → **Storage → Network Volumes → New**.
+2. **Region:** pick a datacenter that has **H100 SXM** availability (volume is
+   region-locked; both pods must be in this region).
+3. **Size: 300 GB.**
+4. Create. ✅
 
----
+═══════════════════════════════════════════════════════════════════════════════
+## PHASE 1 — Setup pod: H100 SXM × 1 (download everything, then terminate)
+═══════════════════════════════════════════════════════════════════════════════
 
-## PHASE 1 — Setup pod (cheap, download everything)
+Use **H100 SXM ×1** for setup (same Hopper arch as the 5-GPU pod) so the compiled
+`flash-attn` wheel matches and is reused in Phase 2.
 
-You do NOT need a GPU to download models. Use the cheapest pod **in the volume's
-region**. (A cheap GPU like 1×A40/L40 is fine too — just don't install flash-attn
-here.)
-
-### 1.1 Create the pod
-- RunPod → **Pods** → **Deploy**.
-- GPU: cheapest available (or a CPU pod if offered) in the volume's region.
-- **Network Volume:** attach the one from Phase 0 → mount path `/workspace`.
-- Template: **RunPod PyTorch 2.x / CUDA 12.4** (or Ubuntu 22.04).
-- Container disk: 20 GB is enough (everything heavy goes on the volume).
-- Start it, open the **Web Terminal** (or SSH).
+### 1.1 Deploy the pod
+- RunPod → **Pods → Deploy**.
+- GPU: **H100 SXM**, **Count = 1**.
+- **Network Volume:** attach the Phase-0 volume → mount `/workspace`.
+- Template: **RunPod PyTorch 2.4+ / CUDA 12.4** (Ubuntu 22.04).
+- Container disk: 30 GB. Start → open **Web Terminal**.
 
 ### 1.2 Clone repos onto the volume
 ```bash
@@ -58,135 +55,140 @@ source /workspace/venv/bin/activate
 python -m pip install --upgrade pip
 ```
 
-### 1.4 Install dependencies (skip flash-attn here)
+### 1.4 Install ALL dependencies (incl. flash-attn — H100 is Hopper)
 ```bash
-# torch (cu128 wheel works on any NVIDIA; arch-independent)
+# torch
 pip install torch==2.8.0 torchvision==0.23.0 --index-url https://download.pytorch.org/whl/cu128
 
-# the platform app deps
-pip install -r /workspace/Upper_Body_Avatar/realtime-liveavatar/requirements.txt
+# flash-attention 3 for Hopper (prebuilt wheel)
+pip install flash_attn_3 \
+  --find-links https://windreamer.github.io/flash-attention3-wheels/cu128_torch280 \
+  --extra-index-url https://download.pytorch.org/whl/cu128
 
-# the model repo deps (do NOT install flash-attn now — it's Hopper-specific,
-# install it on the H800 pod in Phase 2)
+# platform app deps + model repo deps
+pip install -r /workspace/Upper_Body_Avatar/realtime-liveavatar/requirements.txt
 pip install -r /workspace/LiveAvatar/requirements.txt
 pip install "huggingface_hub[cli]"
 ```
 
-### 1.5 Download the checkpoints to the volume
+### 1.5 Download the model weights to the volume
 ```bash
-cd /workspace/LiveAvatar
-mkdir -p ckpt
+cd /workspace/LiveAvatar && mkdir -p ckpt
 huggingface-cli download Wan-AI/Wan2.2-S2V-14B   --local-dir ckpt/Wan2.2-S2V-14B
 huggingface-cli download Quark-Vision/Live-Avatar --local-dir ckpt/LiveAvatar
-# (if a model is gated, run `huggingface-cli login` with your HF token first)
+# if gated: huggingface-cli login   (paste your HF token) then re-run
 ```
 
-### 1.6 Verify the download, then STOP the pod
+### 1.6 (Recommended) verify the model loads on 1 GPU before paying for 5
 ```bash
-du -sh /workspace/LiveAvatar/ckpt/*          # confirm sizes look right
-ls /workspace/venv/bin/python                # venv persisted on the volume
+cd /workspace/Upper_Body_Avatar/realtime-liveavatar
+python -c "import sys; sys.path.insert(0,'/workspace/LiveAvatar'); \
+import liveavatar; print('liveavatar import OK')"
+du -sh /workspace/LiveAvatar/ckpt/*
+ls /workspace/venv/bin/python   # venv persisted
 ```
-- In the RunPod console: **Stop** (or **Terminate**) the setup pod.
-- The Network Volume keeps everything. ✅ You now pay only volume storage.
 
----
+### 1.7 TERMINATE the setup pod
+RunPod console → **Terminate**. The Network Volume keeps repos + venv + weights.
+You now pay only ~$0.07/GB/mo for storage. ✅
 
-## PHASE 2 — Serving pod (multi-GPU, only when you need it)
+═══════════════════════════════════════════════════════════════════════════════
+## PHASE 2 — Serving pod: H100 SXM × 5 (REALTIME), stop when idle
+═══════════════════════════════════════════════════════════════════════════════
 
-### 2.1 Create the pod
-- RunPod → **Pods** → **Deploy**, **same region** as the volume.
-- GPU: **5× H800 80GB** (realtime TPP) — or **1× H100/H800** for the single-GPU
-  embedded path.
+### 2.1 Deploy the pod
+- RunPod → **Pods → Deploy**, **same region** as the volume.
+- GPU: **H100 SXM**, **Count = 5**.
 - **Network Volume:** attach the same one → `/workspace`.
-- **Expose ports:** HTTP **8000**. For WebRTC media also expose a **UDP range**
-  (e.g. 40000–40100) or plan to use TURN (see SETUP.md §8).
-- Start, open terminal.
+- Container disk: 30 GB.
+- **Expose HTTP port 8000.** (RunPod gives you `https://<id>-8000.proxy.runpod.net`.)
+- Start → open terminal.
 
-### 2.2 Reactivate the environment (no re-download!)
+### 2.2 Reactivate the environment (NO re-download)
 ```bash
 source /workspace/venv/bin/activate
 cd /workspace/Upper_Body_Avatar/realtime-liveavatar
-git pull            # grab any code updates
+git pull        # pick up latest code (needs your token or a public repo)
 ```
 
-### 2.3 Install flash-attn FOR HOPPER (fast, prebuilt wheel)
-```bash
-pip install flash_attn_3 \
-  --find-links https://windreamer.github.io/flash-attention3-wheels/cu128_torch280 \
-  --extra-index-url https://download.pytorch.org/whl/cu128
-# (1×non-Hopper GPU instead? use: pip install flash-attn==2.8.3 --no-build-isolation)
-```
-
-### 2.4 Configure `.env`
+### 2.3 Configure `.env` for realtime
 ```bash
 cp .env.example .env
 ```
 Edit `.env`:
 ```bash
 AVATAR_ENGINE=liveavatar
+GPU_COUNT=5
 LIVEAVATAR_REPO=/workspace/LiveAvatar
 LIVEAVATAR_CKPT=/workspace/LiveAvatar/ckpt/Wan2.2-S2V-14B
 LA_LORA_PATH=ckpt/LiveAvatar
-TARGET_FPS=16              # match LiveAvatar native fps for A/V sync
-PRELOAD_MODEL=1
-# single-GPU embedded path:
-GPU_COUNT=1
+LA_SIZE=720*400          # the multi-GPU realtime size from gradio_multi_gpu.sh
+LA_NUM_GPUS_DIT=4        # 4 DiT + 1 VAE across the 5 GPUs
+LA_SAMPLE_STEPS=4
+TARGET_FPS=16            # match LiveAvatar native fps so audio/video stay in sync
 ENABLE_FP8=true
+ENABLE_COMPILE=true      # ~2.5-3x throughput after a one-time warmup compile
 ```
 
-### 2.5 Launch
-
-**Option A — single-GPU embedded (my FastAPI app, simplest, runs end-to-end):**
+### 2.4 Launch the realtime server (5-GPU TPP under torchrun)
 ```bash
 cd /workspace/Upper_Body_Avatar/realtime-liveavatar
-PYTHONPATH=. uvicorn backend.main:app --host 0.0.0.0 --port 8000
-```
-Open the RunPod-provided `https://<pod-id>-8000.proxy.runpod.net/`, upload a
-portrait, paste your OpenAI key, Connect, chat.
+export AVATAR_ENGINE=liveavatar GPU_COUNT=5
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4
+export TORCH_NCCL_BLOCKING_WAIT=1 TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC=86400
+export PYTHONPATH=.
 
-**Option B — 5-GPU realtime TPP (native repo demo, true 45 FPS):**
-The 5-GPU pipeline runs as a torchrun multi-process job and is driven by the
-repo's own launcher, not embedded in a single uvicorn process:
+torchrun --nproc_per_node=5 --master_port=29502 -m backend.main_tpp
+```
+- All 5 ranks load WanS2V and join the TPP collective.
+- Rank 0 serves the OpenAI + WebRTC app on port 8000.
+- First model load + compile takes a few minutes (warm after that).
+
+### 2.5 Use it
+Open `https://<pod-id>-8000.proxy.runpod.net/` → upload a portrait → paste your
+OpenAI key → pick `gpt-4o-mini` → **Connect** → type → the avatar talks in
+realtime. (WebRTC media also needs STUN/TURN for NAT — see SETUP.md §8.)
+
+### 2.6 Smoke check (second terminal on the pod)
+```bash
+source /workspace/venv/bin/activate
+curl -s http://localhost:8000/readyz | python -m json.tool   # engine=liveavatar, gpu_count=5
+```
+
+### 2.7 STOP the pod when idle
+RunPod console → **Stop**. Volume persists. Next time: repeat 2.1–2.5 (no
+download, no reinstall, flash-attn already in the venv).
+
+═══════════════════════════════════════════════════════════════════════════════
+## Fallback: the repo's native realtime demo (guaranteed to run)
+═══════════════════════════════════════════════════════════════════════════════
+If you want the authors' own realtime multi-GPU UI (Gradio, no OpenAI), on the
+5-GPU pod:
 ```bash
 cd /workspace/LiveAvatar
-# realtime gradio demo over 5 GPUs (edit the .sh for image/size if needed):
-export ENABLE_COMPILE=true
-bash gradio_multi_gpu.sh
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4 ENABLE_COMPILE=true
+bash gradio_multi_gpu.sh      # serves on :7860 (expose that port)
 ```
-To put the OpenAI brain+voice in front of the 5-GPU renderer, run that TPP job as
-a **separate worker** and bridge frames to my FastAPI app over a queue — see
-`backend/avatar/liveavatar_engine.py` (module docstring marks the seam). Trying to
-run uvicorn itself under `torchrun --nproc_per_node=5` requires the rank-0-serves
-model and is the advanced path.
+This proves the 5-GPU TPP renderer works on your pod independent of the OpenAI app.
 
-### 2.6 Smoke test
-Follow `SMOKE_TEST.md`. Quick checks:
-```bash
-curl -s http://localhost:8000/readyz | python -m json.tool   # engine=liveavatar
-```
-
-### 2.7 STOP the pod when done
-RunPod console → **Stop**. Volume persists; spin up again later by repeating 2.1–2.5
-(flash-attn from 2.3 persists in the venv, so that step is then a no-op/instant).
-
----
-
-## Cost summary
-
-| Item | When billed |
+═══════════════════════════════════════════════════════════════════════════════
+## Cost
+═══════════════════════════════════════════════════════════════════════════════
+| Item | Billed when |
 |---|---|
-| Network Volume (250 GB) | always (~$17/mo) — cheap |
-| Setup pod (cheap GPU/CPU) | only during Phase 1 download (an hour or two) |
-| Serving pod (5×H800) | only while running in Phase 2 — **stop it when idle** |
+| Network Volume (300 GB) | always (~$21/mo) |
+| Setup pod H100 SXM ×1 | only during Phase 1 (download, ~1–2 h) |
+| Serving pod H100 SXM ×5 | only while running Phase 2 — **stop when idle** |
 
-The expensive 5×H800 time is now minutes-to-hours of actual serving, not hours of
-downloading. That's the saving.
-
+═══════════════════════════════════════════════════════════════════════════════
 ## Gotchas
-- Volume **region must match** the serving GPU's region.
-- A network volume attaches to **one pod at a time**.
+═══════════════════════════════════════════════════════════════════════════════
+- Volume **region must match** the H100 SXM region; a volume attaches to one pod
+  at a time.
 - Keep the **venv on `/workspace`** or installs won't persist.
-- Don't install **flash-attn** on a non-Hopper setup pod.
-- WebRTC needs **HTTPS** + **STUN/TURN**; the RunPod `…proxy.runpod.net` URL is
-  HTTPS but media still needs UDP/TURN (SETUP.md §8).
-- `git pull` on the serving pod needs your token again — or make the repo public.
+- `git pull` on the serving pod needs your token (or make the repo public).
+- The 5-GPU NCCL dispatch in `backend/main_tpp.py` should be validated on the pod;
+  if it errors, use the native `gradio_multi_gpu.sh` path above while debugging.
+- WebRTC needs HTTPS (the RunPod proxy URL is HTTPS) + STUN/TURN for media.
+- Realtime ≠ instant: expect ~1.2 s to first frame (model TTFF), then smooth 30+
+  FPS — true sub-second end-to-end is not possible with a 14B diffusion model.

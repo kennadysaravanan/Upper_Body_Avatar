@@ -45,6 +45,7 @@ class Settings(BaseSettings):
     la_native_fps: int = 16                  # WanS2V output fps; set TARGET_FPS to match
     la_min_segment_seconds: float = 1.0      # min audio buffered before a generate() call
     la_lora_path: str = "ckpt/LiveAvatar"
+    la_num_gpus_dit: int = 4                  # DiT GPUs in the 5-GPU TPP layout (4 DiT + 1 VAE)
 
     # ---- video / media ----
     frame_width: int = 480
