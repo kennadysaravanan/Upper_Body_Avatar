@@ -246,10 +246,13 @@ class LiveAvatarEngine(AvatarEngine):
             if sink is not None:
                 try:
                     frames = engine._decode_result_to_frames(result)
+                    log.info("stream tee: decoded %d frames -> video", len(frames))
                     if frames:
                         sink(frames)
                 except Exception as exc:
-                    log.error("stream tee failed: %s", exc)
+                    log.error("stream tee failed: %s", exc, exc_info=True)
+            else:
+                log.info("vae.decode called but no active sink (engine=%s)", engine._rank)
             return result
 
         vae.decode = wrapped
@@ -293,9 +296,11 @@ class LiveAvatarEngine(AvatarEngine):
             self._active_sink = on_frames     # frames stream out via wrapped vae.decode
             self._decode_drop = 3             # drop warmup frames at clip start
             try:
+                log.info("render: start segment %s", audio_path)
                 if self.is_distributed():
                     self._broadcast_job((prompt, ref_path, audio_path))
                 leftover = self.render_clip(prompt, ref_path, audio_path)
+                log.info("render: done (%d leftover frames)", len(leftover))
                 if leftover:                  # fallback if streaming tee was unavailable
                     on_frames(leftover)
             except Exception as exc:
