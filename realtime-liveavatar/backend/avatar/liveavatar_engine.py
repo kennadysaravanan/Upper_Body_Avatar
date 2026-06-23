@@ -208,7 +208,10 @@ class LiveAvatarEngine(AvatarEngine):
                 dist.init_process_group(backend="nccl")
 
         device = int(os.environ.get("LOCAL_RANK", "0"))
-        torch.cuda.set_device(device)        # pin this rank's CUDA device for NCCL
+        # NOTE: do NOT call torch.cuda.set_device here — the repo's WanS2V handles
+        # device placement via device_id; an explicit set_device hit "invalid
+        # device ordinal" on this pod. The main-thread render loop (main_tpp) is
+        # what fixes the NCCL deadlock.
         log.info("rank %d/%d building WanS2V (single_gpu=%s, fp8=%s)", self._rank, self._world_size, single_gpu, s.enable_fp8)
         self._wan = WanS2V(
             config=self._cfg,
