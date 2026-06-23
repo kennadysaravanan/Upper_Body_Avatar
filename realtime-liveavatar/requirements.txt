@@ -12,7 +12,7 @@ openai==1.59.6
 
 # WebRTC media transport (signaling, ICE, SRTP, VP8/H264).
 aiortc==1.9.0
-av==13.1.0
+av==12.3.0          # aiortc 1.9.0 requires av<13.0.0
 aioice==0.9.0
 
 # Media / image / audio numerics.
