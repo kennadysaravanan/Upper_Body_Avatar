@@ -70,6 +70,7 @@ class ConversationSession:
         self.pc = RTCPeerConnection(RTCConfiguration(iceServers=ice))
         self.pc.addTrack(self.video)
         self.pc.addTrack(self.audio)
+        self._prefer_h264()   # avoid the libvpx ABI mismatch in aiortc's VP8 encoder
 
         @self.pc.on("connectionstatechange")
         async def _on_state():
@@ -80,6 +81,24 @@ class ConversationSession:
         # drain engine frames -> video track
         self._tasks.append(asyncio.create_task(self._drain_frames()))
         SESSIONS.inc()
+
+    def _prefer_h264(self) -> None:
+        """Order video codecs H264 first so negotiation avoids aiortc's libvpx
+        (VP8) encoder, which can hit an ABI mismatch against PyAV's bundled
+        libvpx. H264 uses PyAV/x264 and is widely supported by browsers."""
+        try:
+            from aiortc.rtcrtpsender import RTCRtpSender
+
+            caps = RTCRtpSender.getCapabilities("video")
+            if not caps:
+                return
+            order = {"video/H264": 0, "video/VP9": 1, "video/VP8": 2}
+            codecs = sorted(caps.codecs, key=lambda c: order.get(c.mimeType, 9))
+            for t in self.pc.getTransceivers():
+                if t.kind == "video":
+                    t.setCodecPreferences(codecs)
+        except Exception as exc:
+            log.warning("could not set H264 codec preference: %s", exc)
 
     async def _drain_frames(self) -> None:
         try:
