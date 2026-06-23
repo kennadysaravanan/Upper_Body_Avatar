@@ -1,0 +1,53 @@
+services:
+  app:
+    build: .
+    image: realtime-liveavatar:latest
+    env_file: .env
+    ports:
+      - "8000:8000"
+    # GPU access (RunPod / any nvidia-container-toolkit host). Omit for mock mode.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      - ./backend:/app/backend
+      - ./frontend:/app/frontend
+      - liveavatar_repo:/workspace/LiveAvatar      # cloned repo + checkpoints
+    depends_on:
+      - redis
+      - postgres
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: avatar
+      POSTGRES_PASSWORD: avatar
+      POSTGRES_DB: avatar
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports: ["5432:5432"]
+    restart: unless-stopped
+
+  nginx:
+    image: nginx:1.27-alpine
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
+    depends_on:
+      - app
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  liveavatar_repo:

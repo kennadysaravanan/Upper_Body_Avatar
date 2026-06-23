@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Realtime LiveAvatar</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app">
+    <header>
+      <h1>Realtime LiveAvatar <span class="tag">OpenAI</span></h1>
+      <span id="status" class="status idle">idle</span>
+    </header>
+
+    <main>
+      <section class="stage">
+        <video id="avatar" autoplay playsinline></video>
+        <div id="placeholder" class="placeholder">Upload an image and Connect</div>
+      </section>
+
+      <aside class="panel">
+        <label>Avatar image
+          <input id="image" type="file" accept="image/*" />
+        </label>
+        <img id="preview" class="preview" alt="" hidden />
+
+        <label>OpenAI API key
+          <input id="apiKey" type="password" placeholder="sk-..." autocomplete="off" />
+        </label>
+
+        <label>LLM model
+          <select id="llmModel">
+            <option value="gpt-4o-mini" selected>gpt-4o-mini</option>
+            <option value="gpt-4o">gpt-4o</option>
+            <option value="gpt-4.1">gpt-4.1</option>
+            <option value="gpt-5">gpt-5</option>
+          </select>
+        </label>
+
+        <label>TTS voice
+          <select id="ttsVoice">
+            <option>alloy</option><option>echo</option><option>fable</option>
+            <option>onyx</option><option>nova</option><option>shimmer</option>
+          </select>
+        </label>
+
+        <label>Persona prompt
+          <textarea id="prompt" rows="2">A friendly person speaking to the camera.</textarea>
+        </label>
+
+        <button id="connect" class="primary">Connect</button>
+        <button id="disconnect" class="ghost" disabled>Disconnect</button>
+      </aside>
+    </main>
+
+    <footer>
+      <div id="transcript" class="transcript"></div>
+      <form id="composer">
+        <input id="text" type="text" placeholder="Type a message and press Enter…" disabled autocomplete="off" />
+        <button id="send" type="submit" disabled>Send</button>
+        <button id="interrupt" type="button" class="ghost" disabled>Stop</button>
+      </form>
+    </footer>
+  </div>
+
+  <script src="websocket.js"></script>
+  <script src="webrtc.js"></script>
+  <script src="avatar.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

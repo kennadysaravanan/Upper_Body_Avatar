@@ -1,0 +1,32 @@
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# tests / tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# secrets / env
+.env
+.env.local
+*.pem
+nginx/certs/
+
+# os / editor
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# model artifacts (never commit weights)
+ckpt/
+*.safetensors
+*.bin
+*.pt
+*.mp4
+*.wav

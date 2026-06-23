@@ -1,0 +1,42 @@
+# ── Realtime LiveAvatar platform (Python 3.10) ──────────────────────────────
+# Application layer (always required; this is what runs in `mock` mode too).
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+websockets==14.1
+pydantic==2.10.4
+pydantic-settings==2.7.1
+python-multipart==0.0.20
+
+# OpenAI (LLM + TTS + STT + Realtime). OpenAI-only by design.
+openai==1.59.6
+
+# WebRTC media transport (signaling, ICE, SRTP, VP8/H264).
+aiortc==1.9.0
+av==13.1.0
+aioice==0.9.0
+
+# Media / image / audio numerics.
+numpy==1.26.4
+pillow==11.0.0
+soundfile==0.12.1
+
+# Infra (optional, toggled via ENABLE_REDIS / ENABLE_POSTGRES).
+redis==5.2.1
+asyncpg==0.30.0
+sqlalchemy==2.0.36
+
+# Observability.
+prometheus-client==0.21.1
+
+# Tests.
+pytest==8.3.4
+pytest-asyncio==0.25.0
+
+# ── LiveAvatar (WanS2V-14B) renderer deps — ONLY on the GPU pod ──────────────
+# Installed from the cloned repo, NOT here, because they are CUDA/GPU specific
+# and must match the pod. Do NOT pin torch in this file.
+#
+#   pip install torch==2.8.0 torchvision==0.23.0 --index-url https://download.pytorch.org/whl/cu128
+#   # Hopper (H800/H200): flash_attn_3   |  else: pip install flash-attn==2.8.3 --no-build-isolation
+#   pip install -r /workspace/LiveAvatar/requirements.txt
+#   # transformers / diffusers / wav2vec2 weights come via that requirements file.
