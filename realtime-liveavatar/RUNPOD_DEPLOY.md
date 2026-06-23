@@ -49,7 +49,11 @@ git clone https://github.com/kennadysaravanan/Upper_Body_Avatar
 
 ### 1.3 Create the venv ON THE VOLUME (so it persists)
 ```bash
-apt-get update && apt-get install -y python3.10 python3.10-venv ffmpeg git
+# python3.10-dev + build-essential are REQUIRED: some LiveAvatar deps (pyworld,
+# etc.) compile C/C++ and need Python.h + g++. Without them you get
+# "fatal error: Python.h: No such file or directory".
+apt-get update && apt-get install -y \
+  python3.10 python3.10-venv python3.10-dev build-essential ffmpeg git
 python3.10 -m venv /workspace/venv
 source /workspace/venv/bin/activate
 python -m pip install --upgrade pip
