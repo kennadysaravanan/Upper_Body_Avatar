@@ -170,7 +170,10 @@ class LiveAvatarEngine(AvatarEngine):
             if self._wan is not None:
                 return
             self._build_pipeline()
-            if self._rank == 0:
+            # single-GPU: render loop can run on a background thread (no NCCL).
+            # distributed: main_tpp runs run_render_server_blocking() on the MAIN
+            # thread so NCCL collectives match the worker ranks (avoids deadlock).
+            if self._rank == 0 and not self.is_distributed():
                 self.start_render_server()
 
     def _build_pipeline(self) -> None:
@@ -205,6 +208,7 @@ class LiveAvatarEngine(AvatarEngine):
                 dist.init_process_group(backend="nccl")
 
         device = int(os.environ.get("LOCAL_RANK", "0"))
+        torch.cuda.set_device(device)        # pin this rank's CUDA device for NCCL
         log.info("rank %d/%d building WanS2V (single_gpu=%s, fp8=%s)", self._rank, self._world_size, single_gpu, s.enable_fp8)
         self._wan = WanS2V(
             config=self._cfg,
@@ -277,13 +281,20 @@ class LiveAvatarEngine(AvatarEngine):
         if self._server_started or self._rank != 0:
             return
         self._server_started = True
-        threading.Thread(target=self._render_server, name="render-server", daemon=True).start()
-        log.info("render server started (world_size=%d)", self._world_size)
+        threading.Thread(target=self._render_loop, name="render-server", daemon=True).start()
+        log.info("render server thread started (world_size=%d)", self._world_size)
+
+    def run_render_server_blocking(self) -> None:
+        """Run the render loop on the CALLING (main) thread — required for the
+        distributed TPP path so NCCL collectives share the main thread/device."""
+        self._server_started = True
+        log.info("render server (blocking, main thread) started (world_size=%d)", self._world_size)
+        self._render_loop()
 
     def submit_render(self, prompt: str, ref_path: str, audio_path: str, on_frames: OnFrames) -> None:
         self._render_q.put((prompt, ref_path, audio_path, on_frames))
 
-    def _render_server(self) -> None:
+    def _render_loop(self) -> None:
         """Rank-0 dedicated thread. Drains render jobs; in distributed mode it first
         broadcasts the job so all ranks call generate() together."""
         while True:

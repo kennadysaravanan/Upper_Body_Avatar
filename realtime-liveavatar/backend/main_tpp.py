@@ -42,15 +42,27 @@ def main() -> None:
     engine.build_blocking()  # type: ignore[attr-defined]
 
     if rank != 0:
-        # worker ranks: participate in generate() collectives forever
+        # worker ranks: participate in generate() collectives forever (main thread)
         engine.worker_loop()  # type: ignore[attr-defined]
         return
 
-    # rank 0: render server already started inside build_blocking(); serve HTTP
+    # rank 0: serve HTTP on a BACKGROUND thread, run the render loop (NCCL) on the
+    # MAIN thread so collectives share the same thread/device as the worker ranks.
+    import asyncio
+    import threading
+
     import uvicorn
 
-    log.info("rank 0 serving on %s:%d", settings.host, settings.port)
-    uvicorn.run("backend.main:app", host=settings.host, port=settings.port, log_config=None)
+    config = uvicorn.Config("backend.main:app", host=settings.host, port=settings.port, log_config=None)
+    server = uvicorn.Server(config)
+    server.install_signal_handlers = lambda: None  # not the main thread
+
+    def _serve() -> None:
+        asyncio.run(server.serve())
+
+    threading.Thread(target=_serve, name="uvicorn", daemon=True).start()
+    log.info("rank 0 serving on %s:%d (render loop on main thread)", settings.host, settings.port)
+    engine.run_render_server_blocking()  # type: ignore[attr-defined]  blocks forever
 
 
 if __name__ == "__main__":
